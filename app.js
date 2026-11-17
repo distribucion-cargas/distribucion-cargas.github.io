@@ -43,6 +43,7 @@ function leerCamion() {
     cantEjesSemi: num("cantEjesSemi"),
     sepEjes: num("sepEjes"),
     sepViguetas: num("sepViguetas"),
+    sepPallets: num("sepPallets"),
     kgMetro: num("kgMetro"),
     anchoPaq: num("anchoPaq"),
     altoPaq: num("altoPaq"),
@@ -77,6 +78,7 @@ const RANGOS_CAMION = [
   ["cantEjesSemi", "Cantidad de ejes del semi", 1, 3],
   ["sepEjes", "Separación entre ejes", 0.8, 2.5],
   ["sepViguetas", "Separación entre paquetes", 0, 0.5],
+  ["sepPallets", "Espacio entre pallets", 0, 0.5],
   ["kgMetro", "Peso por metro de vigueta", 5, 60],
   ["anchoPaq", "Ancho del paquete", 0.3, 2.5],
   ["altoPaq", "Alto del paquete", 0.1, 1.5],
@@ -351,12 +353,15 @@ function armarBloques(camion) {
   for (const c of cargas.filter(c => c.tipo === "pallet")) {
     if (c.alto > camion.alto) throw `Un pallet de ${coma(c.alto)} m de alto no entra (alto del semi: ${coma(camion.alto)} m).`;
     // Pallets: NO apilables. Probar las 2 orientaciones y quedarse con la más corta.
+    // Entre pallet y pallet queda "sep" libre (a lo largo y a lo ancho) para
+    // meter la uña del autoelevador: n pallets + (n − 1) espacios ≤ ancho del semi.
+    const sep = camion.sepPallets;
     let mejor = null;
     for (const [aLoLargo, aLoAncho] of [[c.largo, c.ancho], [c.ancho, c.largo]]) {
-      const porFila = Math.floor(camion.ancho / aLoAncho);
+      const porFila = Math.floor((camion.ancho + sep) / (aLoAncho + sep) + 1e-9);
       if (porFila < 1) continue;
       const filas = Math.ceil(c.cantidad / porFila);
-      const largo = filas * aLoLargo;
+      const largo = filas * (aLoLargo + sep);               // cada fila ocupa pallet + espacio
       if (!mejor || largo < mejor.largo) mejor = { largo, porFila, filas, aLoLargo, aLoAncho };
     }
     if (!mejor) throw `Un pallet de ${c.largo}×${c.ancho} m no entra en el ancho del semi.`;
@@ -364,17 +369,17 @@ function armarBloques(camion) {
     const filas = [];
     for (let f = 0; f < mejor.filas; f++) {
       const n = Math.min(mejor.porFila, c.cantidad - f * mejor.porFila);
-      filas.push({ largo: mejor.aLoLargo, peso: n * c.peso, unidades: n });
+      filas.push({ largo: mejor.aLoLargo + sep, cg: mejor.aLoLargo / 2, peso: n * c.peso, unidades: n });
     }
     bloques.push({
       filas,
       tipo: "pallet",
       nombre: `${c.cantidad} pallets`,
       largo: mejor.largo,
-      ancho: Math.min(c.cantidad, mejor.porFila) * mejor.aLoAncho,
+      ancho: Math.min(c.cantidad, mejor.porFila) * (mejor.aLoAncho + sep) - sep,
       alto: c.alto,
       peso: c.peso * c.cantidad,
-      detalle: { ...mejor, pieza: c }
+      detalle: { ...mejor, sep, pieza: c }
     });
   }
 
@@ -564,7 +569,7 @@ function distribuir(camion, bloques) {
     const hueco = Math.max(xs[0], ...xs.slice(1).map((x, i) => x - fin[i]));
     const p = puntaje(camion, ejes, hueco);
     if (!mejores[tipo] || p < mejores[tipo].p)
-      mejores[tipo] = { e: exigencia(camion, ejes), p, reparto, ubicados, ejes, W, libre, hueco, cm: momento / W, ...extra };
+      mejores[tipo] = { e: exigencia(camion, ejes), p, pBase: puntaje(camion, ejes, 0), reparto, ubicados, ejes, W, libre, hueco, cm: momento / W, ...extra };
   }
 
   for (const orden of permutaciones(bloques)) {
@@ -629,18 +634,30 @@ function distribuir(camion, bloques) {
   const opciones = Object.values(mejores);
   const minP = Math.min(...opciones.map(o => o.p));
 
-  // Forma de los operadores (tres grupos): entre las que cumplen los ejes y quedan
-  // casi igual de equilibradas que la mejor (hasta 5 puntos), la que pone MÁS en el
-  // medio. Así el peso queda más repartido y es más fácil de trasladar.
-  const tres = Object.entries(mejores)
-    .filter(([tipo, o]) => tipo.startsWith("tres_") && o.e <= 1 && o.p <= minP + 0.05)
-    .map(([, o]) => o)
-    .sort((a, b) => b.enMedio - a.enMedio || a.p - b.p);
-  if (tres.length) return tres[0];
+  // Regla de los operadores: tiene que haber carga ADELANTE (pegada al frente, le da
+  // peso a la tracción) y ATRÁS (sobre los ejes del semi). Entre las opciones que la
+  // cumplen, no se pasan en ningún eje y quedan casi igual de equilibradas que la
+  // mejor (hasta 5 puntos): primero tres grupos con MÁS carga en el medio, después
+  // la más equilibrada.
+  //  (Para comparar se usa el equilibrio de los ejes sin el castigo por huecos:
+  //   acá los huecos entre grupos son a propósito.)
+  const minBase = Math.min(...opciones.map(o => o.pBase));
+  const validas = opciones
+    .filter(o => o.e <= 1 && o.pBase <= minBase + 0.05 && cargaAdelanteYAtras(camion, o))
+    .sort((a, b) => (b.enMedio ?? -1) - (a.enMedio ?? -1) || a.pBase - b.pBase);
+  if (validas.length) return validas[0];
 
   const buenas = opciones.filter(o => o.p <= minP + 0.01);
   buenas.sort((a, b) => a.hueco - b.hueco || (a.reparto ?? 0) - (b.reparto ?? 0));
   return buenas[0];
+}
+
+// ¿Hay carga pegada al frente (≤ 30 cm) y carga que llega hasta los ejes del semi?
+function cargaAdelanteYAtras(camion, o) {
+  const tramos = o.ubicados.flatMap(b => b.posFilas.map((x, i) => [x, x + b.filas[i].largo]));
+  const inicio = Math.min(...tramos.map(t => t[0]));
+  const fin = Math.max(...tramos.map(t => t[1]));
+  return inicio <= 0.3 + 1e-9 && fin >= camion.ejeSemi;
 }
 
 // Cuánto usa LA CARGA de lo que le queda libre a cada eje (máximo − tara).
@@ -862,6 +879,9 @@ function calcular(bajarAlResultado = true) {
 
     let avisos = "";
     if (aviso) avisos += caja("error", "Así no se puede cargar", aviso);
+    if (r.ubicados.some(b => b.tipo === "pallet") && !cargaAdelanteYAtras(camion, r))
+      avisos += caja("info", "No hay carga adelante y atrás a la vez",
+        "Con esta carga no se puede poner algo pegado al frente y algo sobre los ejes del semi sin pasarse en algún eje. Se usa la ubicación más equilibrada.");
     const enTraccion = parteTraccion(r.ejes) * 100;
     if (enTraccion < camion.minTraccion)
       avisos += caja("alerta", "Poco peso en la tracción",
@@ -1123,7 +1143,7 @@ function paqueteArriba(v, x, y, largo, ancho, nivel) {
 function textoLargo(v, x, y, largo) {
   const { ctx, s, m } = v;
   ctx.fillStyle = ASFALTO;
-  ctx.font = "600 11px 'Barlow Condensed', sans-serif";
+  ctx.font = "600 11px Archivo, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(largo.toFixed(2).replace(".", ","), m + x * s, m + y * s);
@@ -1182,14 +1202,14 @@ function dibujarSemiFrente(v, c) {
 function etiquetaNivel(v, x, y, n) {
   const { ctx, s, m } = v;
   ctx.fillStyle = "#5d6b75";
-  ctx.font = "600 11px 'Barlow Condensed', sans-serif";
+  ctx.font = "600 11px Archivo, sans-serif";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillText("N" + n, m + x * s, m + y * s);
 }
 
 // ---------- PIEZAS DEL DIBUJO ----------
-const ASFALTO = "#24313c";
+const ASFALTO = "#1e292f";
 
 // Flecha naranja que muestra que la rueda está levantada
 function flechaArriba(v, x, yAbajo, yArriba) {
@@ -1241,7 +1261,7 @@ function numero(v, x, y, n) {
   ctx.fill();
   ctx.stroke();
   ctx.fillStyle = ASFALTO;
-  ctx.font = "700 13px 'Barlow Condensed', sans-serif";
+  ctx.font = "700 13px Archivo, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(n, cx, cy + 1);
@@ -1258,7 +1278,7 @@ function regla(v, largo, y) {
   ctx.moveTo(m, Y);
   ctx.lineTo(m + largo * s, Y);
   ctx.stroke();
-  ctx.font = "11px 'Barlow', sans-serif";
+  ctx.font = "11px Archivo, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
   const paso = largo > 10 ? 2 : 1;
@@ -1281,7 +1301,7 @@ function regla(v, largo, y) {
 // % de uso debajo de un eje, con el color de su estado
 function etiquetaEje(v, x, y, u) {
   const { ctx, s, m } = v;
-  ctx.font = "700 13px 'Barlow Condensed', sans-serif";
+  ctx.font = "700 13px Archivo, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = u < 0 || u > 1 ? "#b42318" : u > 0.9 ? "#b85c14" : "#2f7d4f";
@@ -1307,7 +1327,7 @@ function dibujarTractorCostado(v, c, piso, xTrompa, xEjeDel, xEjeTrac) {
   ctx.fill();
   ctx.fillStyle = "#9fc3dc";                           // parabrisas
   ctx.fillRect(X(xTrompa + 0.05), Y(piso - 1.55), 0.5 * s, 0.7 * s);
-  ctx.fillStyle = "#f5b800";                           // franja amarilla
+  ctx.fillStyle = "#dd6418";                           // franja naranja (zuncho)
   ctx.fillRect(X(xTrompa), Y(piso - 0.2), 2.3 * s, 0.08 * s);
 }
 
@@ -1367,9 +1387,9 @@ function dibujarVistas(camion, r) {
     } else {
       for (let f = 0; f < d.filas; f++) {
         const n = b.filas[f].unidades;                   // pallets en esta fila
-        const yFila = (camion.ancho - n * d.aLoAncho) / 2; // centrada a lo ancho
+        const yFila = (camion.ancho - (n * (d.aLoAncho + d.sep) - d.sep)) / 2; // centrada a lo ancho
         for (let k = 0; k < n; k++)
-          rect(arriba, b.posFilas[f], yFila + k * d.aLoAncho, d.aLoLargo, d.aLoAncho, b.color);
+          rect(arriba, b.posFilas[f], yFila + k * (d.aLoAncho + d.sep), d.aLoLargo, d.aLoAncho, b.color);
       }
     }
   }
@@ -1453,7 +1473,7 @@ function dibujarVistas(camion, r) {
   ctx.lineTo(m + r.cm * s, m + (piso + 0.18) * s);
   ctx.stroke();
   ctx.setLineDash([]);
-  ctx.font = "700 12px 'Barlow Condensed', sans-serif";
+  ctx.font = "700 12px Archivo, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
   ctx.fillText("CM", m + r.cm * s, m + 0.42 * s);
@@ -1500,7 +1520,7 @@ function dibujarVistas(camion, r) {
       frente.ctx.globalAlpha = 0.55;
     } else {
       for (let k = 0; k < Math.min(p.cantidad, d.porFila); k++)
-        rect(frente, y0 + k * d.aLoAncho, camion.alto - p.alto, d.aLoAncho, p.alto, b.color);
+        rect(frente, y0 + k * (d.aLoAncho + d.sep), camion.alto - p.alto, d.aLoAncho, p.alto, b.color);
     }
   }
   frente.ctx.globalAlpha = 1;

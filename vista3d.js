@@ -103,9 +103,9 @@ function armarEscena3D(camion, r) {
   // Parabrisas y franja amarilla: caras planas pegadas a la cabina (de un solo lado)
   const xf = xTrompa - 0.01, xa = xTrompa + 2.3, y0c = 0.04, y1c = W - 0.04;
   caras.push(caraPlana([[xf, 0.25, 2.2], [xf, 0.25, 3.05], [xf, W - 0.25, 3.05], [xf, W - 0.25, 2.2]], "#9fc3dc", false, 0.4));
-  caras.push(caraPlana([[xf, y0c, 1.55], [xf, y0c, 1.65], [xf, y1c, 1.65], [xf, y1c, 1.55]], "#f5b800", false, 0.4));
-  caras.push(caraPlana([[xTrompa, y0c, 1.55], [xa, y0c, 1.55], [xa, y0c, 1.65], [xTrompa, y0c, 1.65]], "#f5b800", false, 0.4));
-  caras.push(caraPlana([[xTrompa, y1c, 1.55], [xTrompa, y1c, 1.65], [xa, y1c, 1.65], [xa, y1c, 1.55]], "#f5b800", false, 0.4));
+  caras.push(caraPlana([[xf, y0c, 1.55], [xf, y0c, 1.65], [xf, y1c, 1.65], [xf, y1c, 1.55]], "#dd6418", false, 0.4));
+  caras.push(caraPlana([[xTrompa, y0c, 1.55], [xa, y0c, 1.55], [xa, y0c, 1.65], [xTrompa, y0c, 1.65]], "#dd6418", false, 0.4));
+  caras.push(caraPlana([[xTrompa, y1c, 1.55], [xTrompa, y1c, 1.65], [xa, y1c, 1.65], [xa, y1c, 1.55]], "#dd6418", false, 0.4));
   rueda3(caras, xEjeDel, 0.5, 0.5, 0.0, 0.3, ASFALTO);
   rueda3(caras, xEjeDel, 0.5, 0.5, W - 0.3, W, ASFALTO);
   ruedasDobles(xEjeTrac, 0.5, ASFALTO);
@@ -141,11 +141,11 @@ function armarEscena3D(camion, r) {
       const d = b.detalle, p = d.pieza;
       for (let f = 0; f < d.filas; f++) {
         const n = b.filas[f].unidades;
-        const yFila = (W - n * d.aLoAncho) / 2;
+        const yFila = (W - (n * (d.aLoAncho + d.sep) - d.sep)) / 2;
         for (let k = 0; k < n; k++) {
-          const x = b.posFilas[f], y = yFila + k * d.aLoAncho;
-          caja3(caras, x + 0.02, x + d.aLoLargo - 0.02, y + 0.02, y + d.aLoAncho - 0.02, Z0, Z0 + 0.14, COLOR_TACO);
-          caja3(caras, x + 0.02, x + d.aLoLargo - 0.02, y + 0.02, y + d.aLoAncho - 0.02, Z0 + 0.14, Z0 + p.alto, b.color);
+          const x = b.posFilas[f], y = yFila + k * (d.aLoAncho + d.sep);
+          caja3(caras, x, x + d.aLoLargo, y, y + d.aLoAncho, Z0, Z0 + 0.14, COLOR_TACO);
+          caja3(caras, x, x + d.aLoLargo, y, y + d.aLoAncho, Z0 + 0.14, Z0 + p.alto, b.color);
         }
       }
     }
